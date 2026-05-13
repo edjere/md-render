@@ -634,10 +634,106 @@ if(__exports != exports)module.exports = exports;return module.exports}));
   let saveTimeout = null;
   let userRenamedFile = false;
 
+  // Scroll sync state
+  let blockMap = [];        // [{line, el}] — bridges source lines ↔ preview elements
+  let syncLock = 0;         // guards against scroll-event feedback loops
+  let lineHeight = 24;      // editor textarea line height in px (recomputed lazily)
+  const NON_DOM_TOKENS = new Set(['space', 'def']);
+
   // ── Helpers ──
   function firstHeading(md) {
     const m = md.match(/^#\s+(.+)$/m);
     return m ? m[1].trim() : '';
+  }
+
+  function getEditorLineHeight() {
+    const cs = getComputedStyle(editor);
+    const lh = parseFloat(cs.lineHeight);
+    if (!isNaN(lh)) return lh;
+    return parseFloat(cs.fontSize) * 1.7;
+  }
+
+  // Walk marked's token stream alongside preview's top-level children,
+  // attaching data-source-line to each rendered block.
+  function buildLineMap() {
+    blockMap = [];
+    const tokens = marked.lexer(editor.value);
+    const children = preview.children;
+    let line = 0;
+    let elIdx = 0;
+    for (const tok of tokens) {
+      const raw = tok.raw || '';
+      const newlines = (raw.match(/\n/g) || []).length;
+      if (NON_DOM_TOKENS.has(tok.type)) {
+        line += newlines;
+        continue;
+      }
+      if (elIdx < children.length) {
+        const el = children[elIdx];
+        el.dataset.sourceLine = line;
+        blockMap.push({ line, el });
+        elIdx++;
+      }
+      line += newlines;
+    }
+  }
+
+  function totalSourceLines() {
+    return editor.value.split('\n').length;
+  }
+
+  // Editor scrolled → move preview to matching block (interpolating within block).
+  function syncFromEditor() {
+    if (syncLock || sourceMode || !blockMap.length) return;
+    const max = editor.scrollHeight - editor.clientHeight;
+    if (max <= 0) return;
+
+    const topLine = editor.scrollTop / lineHeight;
+
+    // Find block whose source range covers topLine
+    let i = 0;
+    for (; i < blockMap.length - 1; i++) {
+      if (blockMap[i + 1].line > topLine) break;
+    }
+    const cur = blockMap[i];
+    const next = blockMap[i + 1];
+    const span = next ? (next.line - cur.line) : Math.max(1, totalSourceLines() - cur.line);
+    const progress = Math.max(0, Math.min(1, span > 0 ? (topLine - cur.line) / span : 0));
+
+    const curTop = cur.el.offsetTop;
+    const nextTop = next ? next.el.offsetTop : preview.scrollHeight;
+    const target = curTop + (nextTop - curTop) * progress - 24;
+
+    syncLock = 1;
+    preview.scrollTop = Math.max(0, target);
+    requestAnimationFrame(() => { syncLock = 0; });
+  }
+
+  // Preview scrolled → move editor to matching source line.
+  function syncFromPreview() {
+    if (syncLock || sourceMode || !blockMap.length) return;
+    const max = preview.scrollHeight - preview.clientHeight;
+    if (max <= 0) return;
+
+    const top = preview.scrollTop;
+
+    let i = 0;
+    for (; i < blockMap.length - 1; i++) {
+      if (blockMap[i + 1].el.offsetTop > top) break;
+    }
+    const cur = blockMap[i];
+    const next = blockMap[i + 1];
+    const curTop = cur.el.offsetTop;
+    const nextTop = next ? next.el.offsetTop : preview.scrollHeight;
+    const blockH = nextTop - curTop;
+    const progress = Math.max(0, Math.min(1, blockH > 0 ? (top - curTop) / blockH : 0));
+
+    const span = next ? (next.line - cur.line) : Math.max(1, totalSourceLines() - cur.line);
+    const targetLine = cur.line + span * progress;
+
+    syncLock = 1;
+    editor.scrollTop = targetLine * lineHeight;
+    requestAnimationFrame(() => { syncLock = 0; });
   }
 
   // ── Render ──
@@ -647,6 +743,7 @@ if(__exports != exports)module.exports = exports;return module.exports}));
     // NOTE: innerHTML is intentional — marked.js output is rendered HTML from user's own markdown
     preview.innerHTML = html;
     sourceCode.textContent = html;
+    buildLineMap();
 
     // Auto-derive filename from first heading (unless user renamed manually)
     if (!userRenamedFile) {
@@ -670,6 +767,12 @@ if(__exports != exports)module.exports = exports;return module.exports}));
 
   // ── Live preview ──
   editor.addEventListener('input', render);
+
+  // ── Scroll sync ──
+  // Recompute line height once layout is up so the editor↔preview map is accurate.
+  requestAnimationFrame(() => { lineHeight = getEditorLineHeight(); });
+  editor.addEventListener('scroll', syncFromEditor, { passive: true });
+  preview.addEventListener('scroll', syncFromPreview, { passive: true });
 
   // ── Tab key support ──
   editor.addEventListener('keydown', function(e) {
