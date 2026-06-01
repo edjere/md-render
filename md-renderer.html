@@ -172,15 +172,32 @@
     flex-shrink: 0;
   }
 
+  /* Wide, transparent grab strip with a thin centered visible line.
+     Negative margins make it overlap the panes so it only *looks* 1px
+     wide while giving the mouse an 11px target to grab. */
   .divider {
-    width: 1px;
-    background: var(--border);
+    width: 11px;
+    margin: 0 -5px;
+    background: transparent;
     cursor: col-resize;
     flex-shrink: 0;
-    transition: background 0.15s;
+    position: relative;
+    z-index: 5;
   }
 
-  .divider:hover, .divider.dragging {
+  .divider::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1px;
+    background: var(--border);
+    transition: background 0.15s, width 0.15s;
+  }
+
+  .divider:hover::before, .divider.dragging::before {
     background: var(--accent);
     width: 3px;
   }
@@ -417,8 +434,13 @@
   /* ── Responsive ── */
   @media (max-width: 768px) {
     .container { flex-direction: column; }
-    .divider { width: 100%; height: 1px; cursor: row-resize; }
-    .divider:hover, .divider.dragging { width: 100%; height: 3px; }
+    .divider { width: 100%; height: 11px; margin: -5px 0; cursor: row-resize; }
+    .divider::before {
+      top: 50%; bottom: auto; left: 0; right: 0;
+      width: auto; height: 1px;
+      transform: translateY(-50%);
+    }
+    .divider:hover::before, .divider.dragging::before { width: auto; height: 3px; }
     #preview { padding: 20px; }
     .file-name { display: none; }
   }
@@ -990,6 +1012,12 @@ if(__exports != exports)module.exports = exports;return module.exports}));
     divider.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+  });
+
+  // Double-click the divider to reset to a 50/50 split.
+  divider.addEventListener('dblclick', () => {
+    editorPane.style.flex = '';
+    editorPane.style.width = '';
   });
 
   // ── Toast ──
